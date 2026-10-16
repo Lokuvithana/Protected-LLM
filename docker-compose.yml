@@ -1,0 +1,82 @@
+# Protected LLM: Ollama + synthetic hospital database + LLM API + chat UI.
+#   docker compose up -d --build     start (first run downloads the model)
+#   docker compose ps                status
+#   docker compose logs -f llm-api   follow one service
+name: protected-llm
+
+services:
+  ollama:
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports: ["127.0.0.1:11434:11434"]
+    volumes: [ollama_models:/root/.ollama]
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  ollama-init:                      # one-shot: downloads the model, then exits
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-latest}
+    command: ["pull", "${OLLAMA_MODEL:-qwen2.5:3b}"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    depends_on:
+      ollama: {condition: service_healthy}
+    restart: "no"
+
+  hospital-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports: ["127.0.0.1:5432:5432"]
+    environment:
+      POSTGRES_DB: hospital
+      POSTGRES_USER: hospital_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      LLM_READER_PASSWORD: ${LLM_READER_PASSWORD:?set LLM_READER_PASSWORD in .env}
+    volumes:
+      - ./hospital/db/init:/docker-entrypoint-initdb.d:ro
+      - hospital_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hospital_admin -d hospital"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  llm-api:
+    build: ./hospital/llm-api
+    restart: unless-stopped
+    ports: ["${LLM_API_BIND:-127.0.0.1}:8010:8010"]
+    environment:
+      SERVICE_KEY: ${SERVICE_KEY:?set SERVICE_KEY in .env}
+      DATABASE_URL: postgresql://llm_reader:${LLM_READER_PASSWORD}@hospital-db:5432/hospital
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      LLM_MODE: ${LLM_MODE:-auto}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-4096}
+    depends_on:
+      hospital-db: {condition: service_healthy}
+      ollama-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  chat-ui:
+    build: ./ui
+    restart: unless-stopped
+    ports: ["${UI_PORT:-8080}:80"]
+    environment:
+      SERVICE_KEY: ${SERVICE_KEY}     # nginx adds it to API calls, so the key never reaches the browser
+    depends_on:
+      llm-api: {condition: service_healthy}
+
+volumes:
+  ollama_models:
+  hospital_db_data:

@@ -1,0 +1,17 @@
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # The browser calls /api/...; nginx forwards to the LLM API and adds the key.
+    location /api/ {
+        proxy_pass http://llm-api:8010/;
+        proxy_set_header X-Service-Key "${SERVICE_KEY}";
+        proxy_read_timeout 330s;          # CPU LLMs can be slow
+        proxy_set_header Host $host;
+    }
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hospital Assistant (dev)</title>
+<style>
+  :root { --navy:#0B1F3A; --navy2:#123B6D; --sky:#EAF2FB; --bg:#F7F9FC; --text:#142033; --muted:#667085;
+          --border:#E4EAF1; --green:#16A34A; --red:#DC2626; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:12px; padding:12px 20px; background:var(--navy); color:#fff; flex-wrap:wrap; }
+  header b { font-size:17px; } .tag { font-size:11px; background:rgba(255,255,255,.14); padding:2px 8px; border-radius:99px; }
+  #status { margin-left:auto; font-size:13px; display:flex; align-items:center; gap:6px; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#9aa4b2; } .dot.ok { background:var(--green); } .dot.bad { background:var(--red); } .dot.warn { background:#F59E0B; }
+  main { max-width:900px; margin:0 auto; padding:14px; }
+  .chat { display:flex; flex-direction:column; height:calc(100dvh - 100px); background:#fff; border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+  #messages { flex:1; overflow-y:auto; padding:18px; display:flex; flex-direction:column; gap:12px; }
+  .empty { margin:auto; text-align:center; color:var(--muted); max-width:560px; }
+  .empty h2 { color:var(--text); margin:0 0 6px; }
+  .examples { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-top:14px; }
+  .examples button { border:1px solid var(--border); background:var(--sky); color:var(--navy2); border-radius:99px; padding:6px 12px; cursor:pointer; font:inherit; font-size:13px; }
+  .msg { max-width:80%; padding:10px 14px; border-radius:12px; white-space:pre-wrap; }
+  .user { align-self:flex-end; background:var(--navy); color:#fff; border-bottom-right-radius:4px; }
+  .bot { align-self:flex-start; background:var(--sky); border-bottom-left-radius:4px; }
+  .err { align-self:flex-start; background:#FDECEC; border:1px solid #f5c2c2; color:#7f1d1d; }
+  .pending { align-self:flex-start; color:var(--muted); font-style:italic; }
+  .meta { font-size:11px; color:var(--muted); margin-top:6px; }
+  details { font-size:12px; margin-top:6px; color:var(--muted); white-space:normal; }
+  details pre { background:#fff; border:1px solid var(--border); padding:8px; border-radius:6px; overflow-x:auto; white-space:pre-wrap; }
+  form { display:flex; gap:10px; padding:12px 14px; border-top:1px solid var(--border); }
+  textarea { flex:1; resize:none; padding:10px 12px; border:1px solid var(--border); border-radius:10px; font:inherit; }
+  button.send { background:var(--navy); color:#fff; border:0; border-radius:10px; padding:0 22px; font:inherit; cursor:pointer; }
+  button.send:disabled { opacity:.5; cursor:wait; }
+  .clear { background:none; border:0; color:#cdd6e3; cursor:pointer; font:inherit; font-size:13px; text-decoration:underline; }
+  @media (max-width:640px){ .msg{max-width:92%} main{padding:8px} }
+</style>
+</head>
+<body>
+<header>
+  <b>Hospital Assistant</b><span class="tag">development build · synthetic data only</span>
+  <button class="clear" id="clear" type="button">New chat</button>
+  <div id="status"><span class="dot" id="dot"></span><span id="statustext">checking</span></div>
+</header>
+<main>
+  <div class="chat">
+    <div id="messages">
+      <div class="empty" id="empty">
+        <h2>Ask about synthetic patients</h2>
+        <p>All data is synthetic. Use patient ids (P0001 to P0200) and doctor ids (D001 to D024).
+           Names, NIC, phone and email are not stored in the data the AI can see.</p>
+        <div class="examples" id="examples"></div>
+      </div>
+    </div>
+    <form id="form">
+      <textarea id="input" rows="2" placeholder="Ask a question, for example: Summarise patient P0012" required maxlength="8000"></textarea>
+      <button class="send" id="send">Send</button>
+    </form>
+  </div>
+</main>
+<script>
+const EXAMPLES = [
+  "Summarise patient P0012",
+  "What are the diagnoses of P0005?",
+  "Show the latest clinical notes for P0020",
+  "List cardiology doctors",
+  "Which patients have a dengue diagnosis?",
+  "How many appointments are scheduled, completed and cancelled?",
+];
+const $ = id => document.getElementById(id);
+let history = [];
+
+function add(cls, text) {
+  $("empty")?.remove();
+  const d = document.createElement("div");
+  d.className = "msg " + cls; d.textContent = text;
+  $("messages").appendChild(d); $("messages").scrollTop = 1e9;
+  return d;
+}
+async function health() {
+  try {
+    const h = await (await fetch("/api/health")).json();
+    $("dot").className = "dot " + (h.status === "ok" ? "ok" : "warn");
+    $("statustext").textContent = h.status === "ok" ? `ready (${h.model})`
+      : (!h.model_pulled ? "model still downloading" : "starting");
+  } catch { $("dot").className = "dot bad"; $("statustext").textContent = "API unreachable"; }
+}
+async function ask(text) {
+  add("user", text);
+  const wait = add("pending", "Thinking (CPU models can take up to a minute)...");
+  $("send").disabled = true;
+  try {
+    const r = await fetch("/api/v1/chat", { method: "POST", headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ message: text, history }) });
+    const j = await r.json();
+    wait.remove();
+    if (!r.ok) { add("err", "Error: " + (j.detail || r.status)); return; }
+    const m = add("bot", j.answer);
+    const meta = document.createElement("div"); meta.className = "meta";
+    meta.textContent = `${j.model} · ${j.mode} mode · ${(j.latency_ms / 1000).toFixed(1)} s · ${j.tool_calls.length} database call(s)`;
+    m.appendChild(meta);
+    if (j.tool_calls.length) {
+      const dt = document.createElement("details");
+      dt.innerHTML = "<summary>Database calls</summary>";
+      const pre = document.createElement("pre"); pre.textContent = JSON.stringify(j.tool_calls, null, 2);
+      dt.appendChild(pre); m.appendChild(dt);
+    }
+    history.push({ role: "user", content: text }, { role: "assistant", content: j.answer });
+    history = history.slice(-6);
+  } catch (e) { wait.remove(); add("err", "Could not reach the API: " + e.message); }
+  finally { $("send").disabled = false; $("input").focus(); }
+}
+$("form").addEventListener("submit", e => { e.preventDefault(); const t = $("input").value.trim(); if (!t) return; $("input").value = ""; ask(t); });
+$("input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("form").requestSubmit(); } });
+$("clear").addEventListener("click", () => location.reload());
+EXAMPLES.forEach(t => { const b = document.createElement("button"); b.type = "button"; b.textContent = t; b.onclick = () => ask(t); $("examples").appendChild(b); });
+health(); setInterval(health, 15000);
+</script>
+</body>
+</html>
